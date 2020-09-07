@@ -281,7 +281,7 @@ class Garbage:
         timeout = time.time() + duration
 
         if speed == None:
-            speed=self.crawl_speed
+            speed = self.crawl_speed
 
         logger.debug(f'Starting move to target {self.target_position} at speed {speed}')
 
