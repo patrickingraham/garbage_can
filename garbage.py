@@ -140,7 +140,7 @@ class Garbage:
 
         self.crawl_speed = self.crawl_speedfreq / self.steps_per_mm  # 12.5 mm/s
         self.separation_distance = 300  # [mm]
-        _reduction_factor = 0.5
+        _reduction_factor = 1.0
         self.max_speed = 300 * _reduction_factor  # 300 mm/s ~ 45000 Hz
         self.acceleration = 300 * _reduction_factor  # mm/s2
         # self.steps_per_mm = 150  # 150 steps/mm
@@ -152,9 +152,9 @@ class Garbage:
         # So need a ramp that goes from 0 to self.max_speed in_accel_dist_steps
         # intervals need to be defined as frequencies
         # assume a smooth ramp
-        _number_of_intervals = 10
-        logger.debug(f'acceleration ramp starting speed is {self.max_speed*self.steps_per_mm / _number_of_intervals}')
-        logger.debug(f'max acceleration ramp speed iis {self.max_speed*self.steps_per_mm}')
+        _number_of_intervals = 5
+        logger.debug(f'acceleration ramp starting speed is {repr(self.max_speed*self.steps_per_mm / _number_of_intervals)}')
+        logger.debug(f'max acceleration ramp speed is {self.max_speed*self.steps_per_mm}')
         accel_intervals = np.arange(self.max_speed*self.steps_per_mm / _number_of_intervals,
                                     self.max_speed*self.steps_per_mm,
                                     self.max_speed*self.steps_per_mm / _number_of_intervals, dtype=np.int32)
@@ -169,43 +169,43 @@ class Garbage:
         _interval = 0
         _steps = 0.0
         _deceleration_start = self.separation_distance*self.steps_per_mm - _accel_dist_steps
-        _steps_at_max_speed = self.separation_distance * self.steps_per_mm - 2*_accel_dist_steps
-
-        # steps=0
-        # while steps < self.separation_distance*self.steps_per_mm:
-        #     if steps < _accel_dist_steps:
-        #         ramp_list.append([accel_intervals[_interval], accel_steps_per_interval])
-        #         steps+=
-        #     if (steps >= _accel_dist_steps) and (steps <= _decelleration_start):
+        _steps_at_max_speed = np.int32(1+self.separation_distance * self.steps_per_mm - 2*_accel_dist_steps)
 
         # Create ramp
         # Create acceleration
         for i in accel_intervals:
             ramp_list.append([i, accel_steps_per_interval])
-
         logger.debug(f'ramp list after acceleration is {ramp_list}')
+
         # Section at max speed
-        ramp_list.append([np.round(self.max_speed * self.steps_per_mm), accel_steps_per_interval])
-        logger.debug(f'ramp list after max_speed is {ramp_list}')
+        ramp_list.append([np.int32(self.max_speed * self.steps_per_mm), _steps_at_max_speed])
+        logger.debug(f'ramp list after max_speed is {repr(ramp_list)}')
+
         # Decellerate
         for i in deccel_intervals:
             ramp_list.append([i, accel_steps_per_interval])
         logger.debug(f'ramp list after deceleration is {ramp_list}')
 
-        # Generate the wavechain
-        self.open_ramp = self.generate_ramp(ramp_list)
+        # Generate ALL the waveforms
+        self.pi.wave_clear()  # Clear any forms in memory (shouldn't be any)
+        self.open_waveform = self.generate_ramp(ramp_list, loop_forever=True)
+        self.crawl_waveform = self.generate_ramp([[self.crawl_speedfreq, 3000]], loop_forever=True)
 
         # Variables used in control loops
         self.position = None
         self.target_position = None
+        self.target_waveform = self.crawl_waveform
         self.moving = None
 
     def switch_pressed_foot_callback(self):
         logger.info("Foot switch triggered")
         if self.position == "ReadyToClose":
             self.target_position = "ReadyToOpen"
+            self.target_waveform = self.open_waveform
         elif self.position == "ReadyToOpen":
             self.target_position = "ReadyToClose"
+            # TODO: Assume close_waveform is the same as the open_waveform for now
+            self.target_waveform = self.open_waveform
         else:
             logger.info(
                 f"Current position [{self.position}] is not"
@@ -245,13 +245,13 @@ class Garbage:
         self.last_position = data.position_name
         self.position = None
 
-    def generate_ramp(self, ramp):
+    def generate_ramp(self, ramp, loop_forever=False):
         """Generate ramp wave forms.
         ramp:  List of [Frequency, Steps]
         """
         logger.debug(f'Generating ramp from {ramp}')
 
-        self.pi.wave_clear()  # clear existing waves
+        # self.pi.wave_clear()  # clear existing waves
         length = len(ramp)  # number of ramp levels
         wid = [-1] * length
 
@@ -273,43 +273,55 @@ class Garbage:
             y = steps >> 8
             chain += [255, 0, wid[i], 255, 1, x, y]
 
+        if loop_forever:
+            # loop the last speed forever
+            chain += [255, 0]
+            chain += [255, 0, wid[i], 255, 1, x, y]
+            chain += [255, 3]
+
         return chain
 
-    def move_to_target(self, speed=None):
+    def move_to_target(self, waveform=None):
 
         duration = 30
         timeout = time.time() + duration
+        _speed = None
 
-        if speed == None:
-            speed = self.crawl_speed
+        if waveform == None:
+            _speed = 'crawl'
+            waveform = self.crawl_waveform
 
-        logger.debug(f'Starting move to target {self.target_position} at speed {speed}')
+        logger.debug(f'Starting move to target {self.target_position} at speed {self.target_waveform}')
 
         while self.position != self.target_position:
 
             if time.time() > timeout:
-                raise TimeoutError("Unable to move device to target after {duration} seconds.")
+                raise TimeoutError(f"Did not arrive at target after {duration} seconds.")
 
-            if speed == self.max_speed:
-
+            # Already moving?
+            if self.moving == 0:
+                # Send command to move if no waveform moving
                 if not self.pi.wave_tx_busy():
-                    self.pi.wave_chain(self.open_ramp)  # Transmit chain
-                # while pi.wave_tx_busy():  # wait for waveform to be sent
-                #     time.sleep(0.02)
-
+                    logger.debug('sending movement wavechain')
+                    self.pi.wave_chain(waveform)  # Transmit chain
+                    self.moving = 1
+                else:
+                    raise SystemError('Waveform currently being transmitted but system is not moving.')
             else:
-                self.pi.hardware_PWM(
-                    self.motor.pin_step, self.crawl_speedfreq, self.duty_cycle
-                )
-                self.pi.write(
-                    self.motor.pin_direction, self.rotation_direction
-                )  # start rotating
+                # Movement should be ongoing, so verify wavechain is busy
+                if not self.pi.wave_tx_busy():
+                    raise SystemError('System is in motion but wavechain is not running')
 
-            sleep(0.1)
+                # If here then all is well, so sleep
+                sleep(0.1)
+
+        # Exit of while loop, should be at target
         # stop motion
-        self.pi.hardware_PWM(self.motor.pin_step, self.crawl_speedfreq, 0)
+        self.pi.wave_tx_stop()
+        self.moving = 0
         logger.info(f"Target position of {self.target_position} reached.")
         self.target_position = None
+        self.target_waveform = self.crawl_speed
 
     def home(self):
         """ This routine crawls until a switch is hit"""
@@ -319,23 +331,21 @@ class Garbage:
             logger.info("Device already homed. Returning")
             return
 
-        self.pi.hardware_PWM(self.motor.pin_step, self.crawl_speedfreq, self.duty_cycle)
-        logger.info(
-            f"Finding target, moving with PWM frequency of {self.pi.get_PWM_frequency(self.motor.pin_step)} Hz"
-        )
+        logger.info("Homing device")
 
         duration = 30
         timeout = time.time() + duration
 
-        self.pi.write(
-            self.motor.pin_direction, self.rotation_direction
-        )  # start rotating
+        # start crawling
+        self.pi.wave_chain(self.crawl_waveform)  # Transmit chain
+        self.moving = 1
         while self.position == None:
             if time.time() > timeout:
                 raise TimeoutError("Unable to home device after {duration} seconds.")
         # stop motion
-        self.pi.hardware_PWM(self.motor.pin_step, self.crawl_speedfreq, 0)
-        logger.info("Homing Completed")
+        self.pi.wave_tx_stop()
+        self.moving = 0
+        logger.info(f"Homing Completed, found location {self.position}")
 
     def run(self):
         possible_positions = copy(self.position_names)
@@ -345,7 +355,8 @@ class Garbage:
             while True:
                 # Evaluate if system is happy but not requiring motion
                 if self.target_position == None and self.position != None:
-                    logger.debug(f"Sleeping for 1s. position is {self.position}")
+                    logger.debug(f"Sleeping for 1s. "
+                                 f"Position is {self.position}, target is {self.target_position}")
                     sleep(1)
 
                 # Verify the target name is correct
@@ -362,19 +373,19 @@ class Garbage:
                     if self.last_position == "Open":
                         logger.warning("Door moved manually from Open position")
                         self.target_position = "ReadyToClose"
-                        self.max_speed = self.crawl_speed
+                        self.target_waveform = self.crawl_waveform
                     elif self.last_position == "Closed":
                         logger.warning("Door moved manually from Closed position")
                         self.target_position = "ReadyToOpen"
-                        self.max_speed = self.crawl_speed
+                        self.target_waveform = self.crawl_waveform
                     elif self.last_position == "ReadyToClose":
                         logger.info("Door moved manually from ReadyToClose, closing")
                         self.target_position = "ReadyToOpen"
-                        self.max_speed = self.crawl_speed
+                        self.target_waveform = self.crawl_waveform
                     elif self.last_position == "ReadyToOpen":
                         logger.info("Door moved manually from ReadyToOpen, opening")
                         self.target_position = "ReadyToClose"
-                        self.max_speed = self.crawl_speed
+                        self.target_waveform = self.crawl_waveform
 
                 # Verify the system is at a ready to open/close state
                 if self.position == "Open":
@@ -387,10 +398,12 @@ class Garbage:
                         "Found at Closed position, setting target to ReadyToOpen"
                     )
                     self.target_position = "ReadyToClose"
-                if self.target_position != None:
+
+                # Only allow movement if there is a target and it's not already moving
+                if self.target_position != None and self.moving == 0:
                     logger.debug(f"Monitor sending command to move to target {self.target_position} "
-                                 f"at speed {self.max_speed}")
-                    self.move_to_target(speed=self.max_speed)
+                                 f"at speed {self.target_waveform}")
+                    self.move_to_target(waveform=self.target_waveform)
 
         except KeyboardInterrupt:
             print("\nCtrl-C pressed.  Stopping PIGPIO and exiting...")
@@ -399,6 +412,7 @@ class Garbage:
         finally:
             garbage.pi.set_PWM_dutycycle(garbage.motor.pin_step, 0)  # PWM off
             garbage.pi.stop()
+            self.moving=0
             sys.exit()
 
 
