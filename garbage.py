@@ -45,8 +45,8 @@ class Garbage:
         self.duty_cycle = 100000  # 50%
 
         self.motor = Motor()
-        self.motor.pin_direction = 12  # Direction GPIO Pin
-        self.motor.pin_step = 18  # Step GPIO Pin
+        self.motor.pin_direction = 22  # Direction GPIO Pin
+        self.motor.pin_step = 27  # Step GPIO Pin
 
         # Set up pins as an output
         self.pi.set_mode(self.motor.pin_direction, pigpio.OUTPUT)
@@ -58,13 +58,13 @@ class Garbage:
         self.switch_idler_top = Switch()
         self.switch_idler_top.name = "Idler Top"
         self.switch_idler_top.position_name = self.position_names[0]
-        self.switch_idler_top.pin = 19
+        self.switch_idler_top.pin = 20
         self.switch_idler_top.button = Button(self.switch_idler_top.pin, pull_up=False)
 
         self.switch_idler_bottom = Switch()
         self.switch_idler_bottom.name = "Idler Bottom"
         self.switch_idler_bottom.position_name = self.position_names[1]
-        self.switch_idler_bottom.pin = 13
+        self.switch_idler_bottom.pin = 24
         self.switch_idler_bottom.button = Button(
             self.switch_idler_bottom.pin, pull_up=False
         )
@@ -72,20 +72,20 @@ class Garbage:
         self.switch_motor_top = Switch()
         self.switch_motor_top.name = "Motor Top"
         self.switch_motor_top.position_name = self.position_names[3]
-        self.switch_motor_top.pin = 6
+        self.switch_motor_top.pin = 21
         self.switch_motor_top.button = Button(self.switch_motor_top.pin, pull_up=False)
 
         self.switch_motor_bottom = Switch()
         self.switch_motor_bottom.name = "Motor Bottom"
         self.switch_motor_bottom.position_name = self.position_names[2]
-        self.switch_motor_bottom.pin = 5
+        self.switch_motor_bottom.pin = 12
         self.switch_motor_bottom.button = Button(
             self.switch_motor_bottom.pin, pull_up=False
         )
 
         self.switch_foot = Switch()
         self.switch_foot.name = "Foot switch"
-        self.switch_foot.pin = 27
+        self.switch_foot.pin = 18
         self.switch_foot.button = Button(self.switch_foot.pin, pull_up=True)
 
         # Set switch methods and callbacks
@@ -136,14 +136,12 @@ class Garbage:
         logger.debug(f'motor will do {self.steps_per_mm} steps per mm')
         self.crawl_speedfreq = 3000  # Hz
         self.freq_to_mmps = self.steps_per_mm
-        #conversion = (100 / 7.5) / 2000  # Assume 1mm / 1000 Hz
 
         self.crawl_speed = self.crawl_speedfreq / self.steps_per_mm  # 12.5 mm/s
-        self.separation_distance = 300  # [mm]
+        self.separation_distance = 350  # [mm]
         _reduction_factor = 1.0
         self.max_speed = 300 * _reduction_factor  # 300 mm/s ~ 45000 Hz
         self.acceleration = 300 * _reduction_factor  # mm/s2
-        # self.steps_per_mm = 150  # 150 steps/mm
 
         # time to accelerate
         _accel_time = self.max_speed / self.acceleration  # [s]
@@ -237,11 +235,11 @@ class Garbage:
         self.departed(self.switch_motor_bottom)
 
     def arrived(self, data):
-        print(f"Hello! Arrived at {data.position_name} position")
+        logger.info(f"Hello! Arrived at {data.position_name} position, heading to {self.target_position}.")
         self.position = data.position_name
 
     def departed(self, data):
-        print(f"Goodbye! Departed from {data.position_name}")
+        logger.info(f"Goodbye! Departed from {data.position_name}, , heading to {self.target_position}")
         self.last_position = data.position_name
         self.position = None
 
@@ -251,7 +249,6 @@ class Garbage:
         """
         logger.debug(f'Generating ramp from {ramp}')
 
-        # self.pi.wave_clear()  # clear existing waves
         length = len(ramp)  # number of ramp levels
         wid = [-1] * length
 
@@ -296,6 +293,8 @@ class Garbage:
         while self.position != self.target_position:
 
             if time.time() > timeout:
+                self.pi.wave_tx_stop()
+                self.moving = 0
                 raise TimeoutError(f"Did not arrive at target after {duration} seconds.")
 
             # Already moving?
@@ -341,7 +340,11 @@ class Garbage:
         self.moving = 1
         while self.position == None:
             if time.time() > timeout:
+                self.pi.wave_tx_stop()
+                self.moving = 0
                 raise TimeoutError("Unable to home device after {duration} seconds.")
+            sleep(0.1)
+
         # stop motion
         self.pi.wave_tx_stop()
         self.moving = 0
@@ -397,7 +400,7 @@ class Garbage:
                     logger.info(
                         "Found at Closed position, setting target to ReadyToOpen"
                     )
-                    self.target_position = "ReadyToClose"
+                    self.target_position = "ReadyToOpen"
 
                 # Only allow movement if there is a target and it's not already moving
                 if self.target_position != None and self.moving == 0:
@@ -410,8 +413,11 @@ class Garbage:
         except Exception as e:
             print(f"Caught Exception in garbage.run() of:  \n {e}")
         finally:
-            garbage.pi.set_PWM_dutycycle(garbage.motor.pin_step, 0)  # PWM off
-            garbage.pi.stop()
+            logger.debug('Inside finally')
+            self.pi.wave_tx_stop() # gives error
+            self.pi.wave_clear()
+            self.pi.stop()
+            #garbage.pi.set_PWM_dutycycle(garbage.motor.pin_step, 0)  # PWM off
             self.moving=0
             sys.exit()
 
@@ -427,15 +433,22 @@ if __name__ == "__main__":
     # Where are we?
     if garbage.position == None:
         # Home the device by crawling until a switch is hit
+        
+        # FIXME: This isn't working... homing not stopping when interrupted
         try:
             garbage.home()
         except Exception as e:
-            print(f"Caught Exception in garbage.home() of:  \n {e}")
+            logger.debug(f"Caught Exception in garbage.home() of:  \n {e}")
+            garbage.pi.set_PWM_dutycycle(garbage.motor.pin_step, 0)  # PWM off
+            garbage.pi.stop()
+            sys.exit()
+        except KeyboardInterrupt:
+            logger.debug("\nCtrl-C pressed while homing.  Stopping PIGPIO and exiting...")
             garbage.pi.set_PWM_dutycycle(garbage.motor.pin_step, 0)  # PWM off
             garbage.pi.stop()
             sys.exit()
         finally:
-            print("Homing Complete")
+            logger.info("Homing Complete")
 
     # Move to a ready-to-open or ready-to-close position
     if garbage.position == ["Open"]:
