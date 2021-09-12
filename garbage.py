@@ -41,9 +41,6 @@ class Garbage:
         # Connect to pigpiod daemon
         self.pi = pigpio.pi()
 
-        # Declare pins for motor
-        self.duty_cycle = 100000  # 50%
-
         self.motor = Motor()
         self.motor.pin_direction = 22  # Direction GPIO Pin
         self.motor.pin_step = 27  # Step GPIO Pin
@@ -128,17 +125,21 @@ class Garbage:
         # CW = 0 , CCW = 1
         self.rotation_direction = 0
 
-
         self.pulse_per_motor_rev = 1600
         self.gearbox_ratio = 20
         self.dist_per_rev = 2 * np.pi * 79.070/2.0  # 496.8 [mm]
         self.steps_per_mm = (self.gearbox_ratio * self.pulse_per_motor_rev) / self.dist_per_rev # 128.8
         logger.debug(f'motor will do {self.steps_per_mm} steps per mm')
-        self.crawl_speedfreq = 3000  # Hz
+        
         self.freq_to_mmps = self.steps_per_mm
+        
+        self.crawl_speed = 30 # mm/s
+        self.crawl_speedfreq = self.crawl_speed * self.steps_per_mm # Hertz
+        #self.crawl_speedfreq = 3000  # Hz
+        logger.debug(f'Crawl speed is {self.crawl_speed} mm/s which is equal to {self.crawl_speedfreq} Hz')
 
-        self.crawl_speed = self.crawl_speedfreq / self.steps_per_mm  # 12.5 mm/s
-        self.separation_distance = 350  # [mm]
+#        self.crawl_speed = self.crawl_speedfreq / self.steps_per_mm  # 12.5 mm/s
+        self.separation_distance = 370  # [mm]
         _reduction_factor = 1.0
         self.max_speed = 300 * _reduction_factor  # 300 mm/s ~ 45000 Hz
         self.acceleration = 300 * _reduction_factor  # mm/s2
@@ -150,7 +151,7 @@ class Garbage:
         # So need a ramp that goes from 0 to self.max_speed in_accel_dist_steps
         # intervals need to be defined as frequencies
         # assume a smooth ramp
-        _number_of_intervals = 5
+        _number_of_intervals = 7
         logger.debug(f'acceleration ramp starting speed is {repr(self.max_speed*self.steps_per_mm / _number_of_intervals)}')
         logger.debug(f'max acceleration ramp speed is {self.max_speed*self.steps_per_mm}')
         accel_intervals = np.arange(self.max_speed*self.steps_per_mm / _number_of_intervals,
