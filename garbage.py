@@ -44,10 +44,23 @@ class Garbage:
         self.motor = Motor()
         self.motor.pin_direction = 22  # Direction GPIO Pin
         self.motor.pin_step = 27  # Step GPIO Pin
+        
+        self.motor.pin_enable = 17 # enables drive
 
         # Set up pins as an output
         self.pi.set_mode(self.motor.pin_direction, pigpio.OUTPUT)
         self.pi.set_mode(self.motor.pin_step, pigpio.OUTPUT)
+        self.pi.set_mode(self.motor.pin_enable, pigpio.OUTPUT)
+        
+        # Enable the drive
+        self.pi.write(self.motor.pin_enable, 1)
+        
+        # set direction to CW
+        # motor should only ever rotate CW. CCW rotation just spins
+        # the sprag bearing
+        # CW = 0 , CCW = 1
+        self.rotation_direction = 1
+        self.pi.write(self.motor.pin_direction, self.rotation_direction)
 
         self.position_names = ["Open", "ReadyToClose", "Closed", "ReadyToOpen"]
 
@@ -95,14 +108,14 @@ class Garbage:
         self.switch_idler_top.button.when_released = (
             self.switch_released_idler_top_callback
         )
-
+        
         self.switch_idler_bottom.button.when_pressed = (
             self.switch_pressed_idler_bottom_callback
         )
         self.switch_idler_bottom.button.when_released = (
             self.switch_released_idler_bottom_callback
         )
-
+        
         self.switch_motor_top.button.when_pressed = (
             self.switch_pressed_motor_top_callback
         )
@@ -119,12 +132,6 @@ class Garbage:
 
         self.switch_foot.button.when_pressed = self.switch_pressed_foot_callback
 
-        # set direction to CW
-        # motor should only ever rotate CW. CCW rotation just spins
-        # the sprag bearing
-        # CW = 0 , CCW = 1
-        self.rotation_direction = 0
-
         self.pulse_per_motor_rev = 1600
         self.gearbox_ratio = 20
         self.dist_per_rev = 2 * np.pi * 79.070/2.0  # 496.8 [mm]
@@ -133,16 +140,14 @@ class Garbage:
         
         self.freq_to_mmps = self.steps_per_mm
         
-        self.crawl_speed = 30 # mm/s
+        self.crawl_speed = 50 # mm/s
         self.crawl_speedfreq = self.crawl_speed * self.steps_per_mm # Hertz
-        #self.crawl_speedfreq = 3000  # Hz
         logger.debug(f'Crawl speed is {self.crawl_speed} mm/s which is equal to {self.crawl_speedfreq} Hz')
 
-#        self.crawl_speed = self.crawl_speedfreq / self.steps_per_mm  # 12.5 mm/s
-        self.separation_distance = 370  # [mm]
+        self.separation_distance = 390  # [mm]
         _reduction_factor = 1.0
         self.max_speed = 300 * _reduction_factor  # 300 mm/s ~ 45000 Hz
-        self.acceleration = 300 * _reduction_factor  # mm/s2
+        self.acceleration = 500 * _reduction_factor  # mm/s2
 
         # time to accelerate
         _accel_time = self.max_speed / self.acceleration  # [s]
@@ -313,7 +318,8 @@ class Garbage:
                     raise SystemError('System is in motion but wavechain is not running')
 
                 # If here then all is well, so sleep
-                sleep(0.1)
+                # This shouldn't be necessary
+                sleep(0.01)
 
         # Exit of while loop, should be at target
         # stop motion
@@ -355,13 +361,20 @@ class Garbage:
         possible_positions = copy(self.position_names)
         possible_positions.append(None)
         logger.info("Beginning monitor loop")
+        iter=1
         try:
             while True:
                 # Evaluate if system is happy but not requiring motion
                 if self.target_position == None and self.position != None:
-                    logger.debug(f"Sleeping for 1s. "
-                                 f"Position is {self.position}, target is {self.target_position}")
-                    sleep(1)
+                    if iter == 1:
+                        logger.debug(f"Sleeping for 1s. "
+                                     f"Position is {self.position}, target is {self.target_position}")
+                    elif iter >= 10:
+                        iter = 0
+                    
+                    iter += 1 # Note that iter never equals zero
+                    
+                    sleep(0.5)
 
                 # Verify the target name is correct
                 if self.target_position not in possible_positions:
@@ -464,3 +477,4 @@ if __name__ == "__main__":
     garbage.pi.set_PWM_dutycycle(garbage.motor.pin_step, 0)  # PWM off
     garbage.pi.stop()
     sys.exit()
+cd
